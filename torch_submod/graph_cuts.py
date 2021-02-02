@@ -1,6 +1,7 @@
 """Argmin-differentiable total variation functions."""
 from __future__ import division, print_function
 
+from pathos import multiprocessing
 # Must import these first, gomp issues with pytorch.
 from prox_tv import tv1w_2d, tv1_2d, tv1w_1d, tv1_1d
 
@@ -14,32 +15,60 @@ from .blocks import blockwise_means, blocks_2d
 __all__ = ("TotalVariation2d", "TotalVariation2dWeighted", "TotalVariation1d")
 
 
+def batch_process(num_workers=8, multiprocess=False):
+    pool = multiprocessing.Pool(num_workers) if multiprocess else None
+
+    def decorator(single_sample_fn):
+        def wrapper(*tensors, ndim=2, **kwargs):
+            device = tensors[0].device
+            tensors = [t.detach().cpu().numpy() for t in tensors]
+
+            if tensors[0].ndim == ndim:
+                out = single_sample_fn(*tensors, **kwargs)
+            elif tensors[0].ndim == ndim + 1:
+                def single_sample_fn_(args):
+                    return single_sample_fn(*args, **kwargs)
+                if pool:
+                    outs = pool.map(single_sample_fn_, zip(*tensors))
+                else:
+                    outs = [single_sample_fn_(args) for args in zip(*tensors)]
+                out = np.stack(outs)
+            else:
+                raise ValueError("The input tensor must have either {} "
+                                 "or {} dimensions".format(ndim, ndim + 1))
+
+            return torch.as_tensor(out, device=device)
+        return wrapper
+    return decorator
+
+
 class TotalVariationBase(Function):
 
     @staticmethod
     def _grad_x(opt, grad_output, average_connected):
+        if opt.ndim == 1:
+            opt = opt.reshape(1, -1)
+
         if average_connected:
-            blocks = blocks_2d(opt.detach().cpu().numpy())
+            blocks = blocks_2d(opt)
         else:
-            _, blocks = np.unique(opt.detach().cpu().numpy().ravel(),
-                                  return_inverse=True)
-        grad_x = blockwise_means(blocks.ravel(),
-                                 grad_output.detach().cpu().numpy().ravel())
+            _, blocks = np.unique(opt.ravel(), return_inverse=True)
+        grad_x = blockwise_means(blocks.ravel(), grad_output.ravel())
         # We need the clone as there seems to e a double-free error in py27,
         # namely, torch free()s the array after numpy has already free()d it.
-        return torch.from_numpy(grad_x).view(opt.size()).clone()
+        return grad_x.reshape(opt.shape)
 
     @staticmethod
     def _grad_w_row(opt, grad_x):
         """Compute the derivative with respect to the row weights."""
-        diffs_row = torch.sign(opt[:, :-1] - opt[:, 1:])
-        return - diffs_row * (grad_x[:, :-1] - grad_x[:, 1:])
+        diffs_row = torch.sign(opt[..., :-1] - opt[..., 1:])
+        return - diffs_row * (grad_x[..., :-1] - grad_x[..., 1:])
 
     @staticmethod
     def _grad_w_col(opt, grad_x):
         """Compute the derivative with respect to the column weights."""
-        diffs_col = torch.sign(opt[:-1, :] - opt[1:, :])
-        return - diffs_col * (grad_x[:-1, :] - grad_x[1:, :])
+        diffs_col = torch.sign(opt[..., :-1, :] - opt[..., 1:, :])
+        return - diffs_col * (grad_x[..., :-1, :] - grad_x[..., 1:, :])
 
     @staticmethod
     def _refine(opt, x, weights_row, weights_col):
@@ -50,9 +79,9 @@ class TotalVariationBase(Function):
         ordered_vec = np.zeros_like(idx, dtype=np.float)
         ordered_vec[idx] = np.arange(np.size(opt))
         f = TotalVariationBase._linearize(ordered_vec.reshape(opt.shape),
-                                          weights_row.detach().cpu().numpy(),
-                                          weights_col.detach().cpu().numpy())
-        opt_idx = isotonic((x.view(-1).detach().cpu().numpy() - f.ravel())[idx])
+                                          weights_row,
+                                          weights_col)
+        opt_idx = isotonic((x.ravel() - f.ravel())[idx])
         opt = np.zeros_like(opt_idx)
         opt[idx] = opt_idx
         return opt
@@ -86,7 +115,8 @@ class TotalVariationBase(Function):
         return f
 
 
-def TotalVariation2dWeighted(refine=True, average_connected=True, tv_args={}):
+def TotalVariation2dWeighted(refine=True, average_connected=True,
+                             num_workers=8, multiprocess=False, tv_args={}):
     r"""A two dimensional total variation function.
 
     Specifically, given as input the unaries `x`, positive row weights
@@ -117,6 +147,22 @@ def TotalVariation2dWeighted(refine=True, average_connected=True, tv_args={}):
     class TotalVariation2dWeighted_(TotalVariationBase):
 
         @staticmethod
+        @batch_process(num_workers=num_workers, multiprocess=multiprocess)
+        def solve_and_refine(x, w_col, w_row, refine=True, **tv_args):
+
+            opt = tv1w_2d(x, w_col, w_row, **tv_args)
+            if refine:
+                opt = TotalVariationBase._refine(opt, x, w_row, w_col)
+
+            return opt
+
+        @staticmethod
+        @batch_process(num_workers=num_workers, multiprocess=multiprocess)
+        def _grad_x(opt, grad_output, average_connected):
+            return TotalVariationBase._grad_x(opt, grad_output,
+                                              average_connected)
+
+        @staticmethod
         def forward(ctx, x, weights_row, weights_col):
             r"""Solve the total variation problem and return the solution.
 
@@ -140,14 +186,10 @@ def TotalVariation2dWeighted(refine=True, average_connected=True, tv_args={}):
             :class:`torch:torch.Tensor`
                 The solution to the total variation problem, of shape ``(m, n)``.
             """
-            opt = tv1w_2d(x.detach().cpu().numpy(),
-                          weights_col.detach().cpu().numpy(),
-                          weights_row.detach().cpu().numpy(),
-                          **tv_args)
-            if refine:
-                opt = TotalVariation2dWeighted_._refine(
-                    opt, x, weights_row, weights_col)
-            opt = torch.tensor(opt, device=x.device).view_as(x)
+            opt = TotalVariation2dWeighted_.solve_and_refine(
+                x, weights_col, weights_row,
+                refine=refine, **tv_args).view_as(x)
+
             ctx.save_for_backward(opt)
             ctx.device = x.device
             return opt
@@ -157,22 +199,23 @@ def TotalVariation2dWeighted(refine=True, average_connected=True, tv_args={}):
             opt, = ctx.saved_tensors
             grad_weights_row, grad_weights_col = None, None
             grad_x = TotalVariation2dWeighted_._grad_x(
-                opt, grad_output, average_connected).to(ctx.device)
+                opt, grad_output, average_connected=average_connected)
 
             if ctx.needs_input_grad[1]:
                 grad_weights_row = TotalVariation2dWeighted_._grad_w_row(
-                    opt, grad_x).to(ctx.device)
+                    opt, grad_x)
 
             if ctx.needs_input_grad[2]:
                 grad_weights_col = TotalVariation2dWeighted_._grad_w_col(
-                    opt, grad_x).to(ctx.device)
+                    opt, grad_x)
 
             return grad_x, grad_weights_row, grad_weights_col
 
     return TotalVariation2dWeighted_.apply
 
 
-def TotalVariation2d(refine=True, average_connected=True, tv_args={}):
+def TotalVariation2d(refine=True, average_connected=True,
+                     num_workers=8, multiprocess=False, tv_args={}):
     r"""A two dimensional total variation function with tied edge weights.
 
     Specifically, given as input the unaries `x` and edge weight ``w``, the
@@ -202,6 +245,22 @@ def TotalVariation2d(refine=True, average_connected=True, tv_args={}):
     class TotalVariation2d_(TotalVariationBase):
 
         @staticmethod
+        @batch_process(num_workers=num_workers, multiprocess=multiprocess)
+        def solve_and_refine(x, w, refine=True, **tv_args):
+
+            opt = tv1_2d(x, w[0], **tv_args)
+            if refine:  # Should we improve it with isotonic regression.
+                opt = TotalVariationBase._refine(opt, x, w, w)
+
+            return opt
+
+        @staticmethod
+        @batch_process(num_workers=num_workers, multiprocess=multiprocess)
+        def _grad_x(opt, grad_output, average_connected):
+            return TotalVariationBase._grad_x(opt, grad_output,
+                                              average_connected)
+
+        @staticmethod
         def forward(ctx, x, w):
             r"""Solve the total variation problem and return the solution.
 
@@ -225,15 +284,11 @@ def TotalVariation2d(refine=True, average_connected=True, tv_args={}):
             :class:`torch:torch.Tensor`
                 The solution to the total variation problem, of shape ``(m, n)``.
             """
-            assert w.size() == (1,)
-            opt = tv1_2d(x.detach().cpu().numpy(),
-                         w.detach().cpu().numpy()[0],
-                         **tv_args)
+            assert (x.ndim == 2 and w.size() == (1,)) or \
+                   (x.ndim == 3 and w[0].size() == (1,))
+            opt = TotalVariation2d_.solve_and_refine(
+                x, w, refine=refine, **tv_args).view_as(x)
 
-            if refine:  # Should we improve it with isotonic regression.
-                opt = TotalVariation2d_._refine(opt, x, w, w)
-
-            opt = torch.tensor(opt, device=x.device).view_as(x)
             ctx.save_for_backward(opt)
             ctx.device = x.device
             return opt
@@ -242,22 +297,28 @@ def TotalVariation2d(refine=True, average_connected=True, tv_args={}):
         def backward(ctx, grad_output):
             opt, = ctx.saved_tensors
             grad_x = TotalVariation2d_._grad_x(
-                opt, grad_output, average_connected).to(ctx.device)
+                opt, grad_output, average_connected=average_connected)
             grad_w = None
 
             if ctx.needs_input_grad[1]:
+
+                grad_w_row = TotalVariation2d_._grad_w_row(opt, grad_x)
+                grad_w_row = grad_w_row.view(*grad_w_row.shape[:-2], -1)
+                grad_w_col = TotalVariation2d_._grad_w_col(opt, grad_x)
+                grad_w_col = grad_w_col.view(*grad_w_col.shape[:-2], -1)
+
                 grad_w = (
-                    torch.sum(TotalVariation2d_._grad_w_row(opt, grad_x)) +
-                    torch.sum(TotalVariation2d_._grad_w_col(opt, grad_x))
+                        torch.sum(grad_w_row, dim=-1, keepdim=True) +
+                        torch.sum(grad_w_col, dim=-1, keepdim=True)
                 )
-                grad_w = torch.tensor([grad_w], device=ctx.device)
 
             return grad_x, grad_w
 
     return TotalVariation2d_.apply
 
 
-def TotalVariation1d(average_connected=True, tv_args={}):
+def TotalVariation1d(average_connected=True, num_workers=8,
+                     multiprocess=False, tv_args={}):
     r"""A one dimensional total variation function.
 
     Specifically, given as input the signal `x` and weights :math:`\mathbf{w}`,
@@ -284,6 +345,24 @@ def TotalVariation1d(average_connected=True, tv_args={}):
     class TotalVariation1d_(TotalVariationBase):
 
         @staticmethod
+        @batch_process(num_workers=num_workers, multiprocess=multiprocess)
+        def solve_and_refine(x, w, equal_weights=True, **tv_args):
+
+            if equal_weights:
+                opt = tv1_1d(x.reshape(-1), w[0], **tv_args)
+            else:
+                opt = tv1w_1d(x.reshape(-1), w.reshape(-1), **tv_args)
+
+            return opt
+
+        @staticmethod
+        @batch_process(num_workers=num_workers, multiprocess=multiprocess)
+        def _grad_x(opt, grad_output, average_connected):
+            return TotalVariationBase._grad_x(opt, grad_output,
+                                              average_connected)
+
+
+        @staticmethod
         def forward(ctx, x, weights):
             r"""Solve the total variation problem and return the solution.
 
@@ -301,16 +380,11 @@ def TotalVariation1d(average_connected=True, tv_args={}):
             :class:`torch:torch.Tensor`
                 The solution to the total variation problem, of shape ``(m, n)``
             """
-            ctx.equal_weights = weights.size() == (1,)
-            if ctx.equal_weights:
-                opt = tv1_1d(x.detach().cpu().numpy().ravel(),
-                             weights.detach().cpu().numpy()[0],
-                             **tv_args)
-            else:
-                opt = tv1w_1d(x.detach().cpu().numpy().ravel(),
-                              weights.detach().cpu().numpy().ravel(),
-                              **tv_args)
-            opt = torch.tensor(opt, device=x.device).view_as(x)
+            ctx.equal_weights = (x.ndim == 1 and weights.size() == (1,)) or \
+                                (x.ndim == 2 and weights[0].size() == (1,))
+            opt = TotalVariation1d_.solve_and_refine(
+                x, weights, equal_weights=ctx.equal_weights,
+                ndim=1, **tv_args).view_as(x)
 
             ctx.save_for_backward(opt)
             ctx.device = x.device
@@ -321,17 +395,17 @@ def TotalVariation1d(average_connected=True, tv_args={}):
             opt, = ctx.saved_tensors
             grad_weights = None
 
-            opt = opt.view((1, -1))
             grad_x = TotalVariation1d_._grad_x(
-                opt, grad_output, average_connected).to(ctx.device)
+                opt, grad_output,
+                average_connected=average_connected,
+                ndim=1).view(opt.shape)
 
             if ctx.needs_input_grad[1]:
-                grad_weights = TotalVariation1d_._grad_w_row(
-                    opt, grad_x).view(-1).to(ctx.device)
+                grad_weights = TotalVariation1d_._grad_w_row(opt, grad_x)
+                grad_weights = grad_weights.view(*grad_weights.shape[:-1], -1)
                 if ctx.equal_weights:
-                    grad_weights = torch.tensor([torch.sum(grad_weights)],
-                                                device=ctx.device)
+                    grad_weights = torch.sum(grad_weights, dim=-1, keepdim=True)
 
-            return grad_x.view(-1), grad_weights
+            return grad_x.view(opt.size()), grad_weights
 
     return TotalVariation1d_.apply

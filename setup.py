@@ -103,6 +103,7 @@ setup(
     packages=['torch_submod'],
     ext_modules=ext_modules,
     install_requires=[
+        'pathos',
         'pybind11>=2.2'
         'numpy',
     ],

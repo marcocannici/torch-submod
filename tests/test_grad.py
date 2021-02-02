@@ -8,6 +8,7 @@ from hypothesis import given, settings
 import hypothesis.strategies as st
 
 
+@settings(deadline=30000)
 @given(st.integers(10, 100), st.floats(0.1, 10))
 def test_1d(n, w):
     x = Variable(torch.randn(n), requires_grad=True)
@@ -17,6 +18,7 @@ def test_1d(n, w):
                      eps=1e-5, atol=1e-2, rtol=1e-3)
 
 
+@settings(deadline=30000)
 @given(st.integers(10, 100), st.floats(0.1, 10))
 def test_1dw(n, w):
     x = Variable(10 * torch.randn(n), requires_grad=True)
@@ -26,7 +28,7 @@ def test_1dw(n, w):
                      eps=5e-5, atol=5e-2, rtol=1e-2)
 
 
-@settings(deadline=30000, max_examples=30, timeout=120)
+@settings(deadline=30000, max_examples=30)
 @given(st.integers(5, 20), st.integers(5, 20), st.floats(0.1, 10))
 def test_2d(n, m, w):
     x = Variable(torch.randn(n, m), requires_grad=True)
@@ -36,7 +38,7 @@ def test_2d(n, m, w):
                      eps=1e-5, atol=1e-2, rtol=1e-3)
 
 
-@settings(deadline=30000, max_examples=30, timeout=120)
+@settings(deadline=30000, max_examples=30)
 @given(st.integers(5, 10), st.integers(5, 10), st.floats(0.1, 10))
 def test_2dw(n, m, w):
     x = Variable(torch.randn(n, m), requires_grad=True)
