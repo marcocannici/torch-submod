@@ -15,13 +15,15 @@ def test_1d(b, n, w):
     w = Variable(torch.Tensor([[w]] * b), requires_grad=True)
     tv_args = {'method': 'condattautstring'}
 
-    tv = TotalVariation1d(num_workers=b, tv_args=tv_args)
-    with torch.no_grad():
-        batch_tv = tv(x, w)
-        sample_tv = torch.stack([tv(x[i], w[i]) for i in range(b)])
+    for batch in [True, False]:
+        tv = TotalVariation1d(average_connected=False, num_workers=b,
+                              batch_backward=batch, tv_args=tv_args)
+        with torch.no_grad():
+            batch_tv = tv(x, w)
+            sample_tv = torch.stack([tv(x[i], w[i]) for i in range(b)])
 
-    assert bool(torch.allclose(batch_tv, sample_tv))
-    assert gradcheck(tv, (x, w), eps=1e-5, atol=1e-2, rtol=1e-3)
+        assert bool(torch.allclose(batch_tv, sample_tv))
+        assert gradcheck(tv, (x, w), eps=1e-5, atol=1e-2, rtol=1e-3)
 
 
 @settings(deadline=30000, max_examples=10)
@@ -31,13 +33,15 @@ def test_1dw(b, n, w):
     w = Variable(0.1 + w * torch.rand(b, n - 1), requires_grad=True)
     tv_args = {'method': 'tautstring'}
 
-    tv = TotalVariation1d(num_workers=b, tv_args=tv_args)
-    with torch.no_grad():
-        batch_tv = tv(x, w)
-        sample_tv = torch.stack([tv(x[i], w[i]) for i in range(b)])
+    for batch in [True, False]:
+        tv = TotalVariation1d(average_connected=False, num_workers=b,
+                              batch_backward=batch, tv_args=tv_args)
+        with torch.no_grad():
+            batch_tv = tv(x, w)
+            sample_tv = torch.stack([tv(x[i], w[i]) for i in range(b)])
 
-    assert bool(torch.allclose(batch_tv, sample_tv))
-    assert gradcheck(tv, (x, w), eps=5e-5, atol=5e-2, rtol=1e-2)
+        assert bool(torch.allclose(batch_tv, sample_tv))
+        assert gradcheck(tv, (x, w), eps=5e-5, atol=5e-2, rtol=1e-2)
 
 
 @settings(deadline=30000, max_examples=10)
@@ -45,15 +49,17 @@ def test_1dw(b, n, w):
 def test_2d(b, n, m, w):
     x = Variable(torch.randn(b, n, m), requires_grad=True)
     w = Variable(0.1 + torch.Tensor([[w]] * b), requires_grad=True)
-    tv_args = {'method': 'dr', 'max_iters': 1000, 'n_threads': 6}
+    tv_args = {'method': 'dr', 'max_iters': 100, 'n_threads': 2}
 
-    tv = TotalVariation2d(num_workers=b, tv_args=tv_args)
-    with torch.no_grad():
-        batch_tv = tv(x, w)
-        sample_tv = torch.stack([tv(x[i], w[i]) for i in range(b)])
+    for batch in [True, False]:
+        tv = TotalVariation2d(refine=True, average_connected=False, num_workers=b,
+                              batch_backward=batch, tv_args=tv_args)
+        with torch.no_grad():
+            batch_tv = tv(x, w)
+            sample_tv = torch.stack([tv(x[i], w[i]) for i in range(b)])
 
-    assert torch.allclose(batch_tv, sample_tv)
-    assert gradcheck(tv, (x, w), eps=1e-5, atol=1e-2, rtol=1e-3)
+        assert torch.allclose(batch_tv, sample_tv)
+        assert gradcheck(tv, (x, w), eps=1e-5, atol=1e-2, rtol=1e-3)
 
 
 @settings(deadline=30000, max_examples=10)
@@ -62,12 +68,14 @@ def test_2dw(b, n, m, w):
     x = Variable(torch.randn(b, n, m), requires_grad=True)
     w_r = Variable(0.1 + w * torch.rand(b, n, m-1), requires_grad=True)
     w_c = Variable(0.1 + w * torch.rand(b, n-1, m), requires_grad=True)
-    tv_args = {'max_iters': 1000, 'n_threads': 6}
+    tv_args = {'max_iters': 100, 'n_threads': 2}
 
-    tv = TotalVariation2dWeighted(num_workers=b, tv_args=tv_args)
-    with torch.no_grad():
-        batch_tv = tv(x, w_r, w_c)
-        sample_tv = torch.stack([tv(x[i], w_r[i], w_c[i]) for i in range(b)])
+    for batch in [True, False]:
+        tv = TotalVariation2dWeighted(refine=True, average_connected=False, num_workers=b,
+                                      batch_backward=batch, tv_args=tv_args)
+        with torch.no_grad():
+            batch_tv = tv(x, w_r, w_c)
+            sample_tv = torch.stack([tv(x[i], w_r[i], w_c[i]) for i in range(b)])
 
-    assert torch.allclose(batch_tv, sample_tv)
-    assert gradcheck(tv, (x, w_r, w_c), eps=1e-5, atol=5e-2, rtol=1e-3)
+        assert torch.allclose(batch_tv, sample_tv)
+        assert gradcheck(tv, (x, w_r, w_c), eps=1e-5, atol=5e-2, rtol=1e-3)

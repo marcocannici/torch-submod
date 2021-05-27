@@ -1,6 +1,7 @@
 """Argmin-differentiable total variation functions."""
 from __future__ import division, print_function
 
+import warnings
 from pathos import multiprocessing
 # Must import these first, gomp issues with pytorch.
 from prox_tv import tv1w_2d, tv1_2d, tv1w_1d, tv1_1d
@@ -11,6 +12,7 @@ from sklearn.isotonic import isotonic_regression as isotonic
 import torch
 from torch.autograd import Function
 from .blocks import blockwise_means, blocks_2d
+from .blocks_torch import blockwise_means_batch
 
 __all__ = ("TotalVariation2d", "TotalVariation2dWeighted", "TotalVariation1d")
 
@@ -44,8 +46,25 @@ def batch_process(num_workers=8, multiprocess=False):
 
 class TotalVariationBase(Function):
 
+    @classmethod
+    def _grad_x(cls, opt, grad_output, average_connected, ndim=2, batch_enabled=False):
+        """Compute the derivative with respect to the signal"""
+        if average_connected or not batch_enabled:
+            if batch_enabled is True:
+                warnings.warn("Batch enabled backward implementation does not support "
+                              "average_connected=True yet, calling standard "
+                              "implementation.")
+            return cls._grad_x_sample(opt, grad_output,
+                                      average_connected=average_connected,
+                                      ndim=ndim)
+        else:
+            return cls._grad_x_batch(opt, grad_output,
+                                     average_connected=average_connected,
+                                     ndim=ndim)
+
     @staticmethod
-    def _grad_x(opt, grad_output, average_connected):
+    def _grad_x_sample(opt, grad_output, average_connected):
+        """Compute the derivative with respect to the signal for a single sample"""
         if opt.ndim == 1:
             opt = opt.reshape(1, -1)
 
@@ -56,6 +75,24 @@ class TotalVariationBase(Function):
         grad_x = blockwise_means(blocks.ravel(), grad_output.ravel())
         # We need the clone as there seems to e a double-free error in py27,
         # namely, torch free()s the array after numpy has already free()d it.
+        return grad_x.reshape(opt.shape)
+
+    @staticmethod
+    def _grad_x_batch(opt, grad_output, average_connected, ndim=2):
+        """Compute the derivative with respect to the signal for a batch of samples"""
+        assert not average_connected, "_grad_x_batch doesn't support average_connected"
+        assert opt.shape == grad_output.shape, "'opt' and 'grad_output' must have " \
+                                               "the same shape"
+
+        if opt.ndim == ndim:
+            grad_x = blockwise_means_batch(opt.reshape(1, -1), grad_output.reshape(1, -1))
+        elif opt.ndim == ndim + 1:
+            B = opt.shape[0]
+            grad_x = blockwise_means_batch(opt.reshape(B, -1), grad_output.reshape(B, -1))
+        else:
+            raise ValueError("The input tensor must have either {} "
+                             "or {} dimensions".format(ndim, ndim + 1))
+
         return grad_x.reshape(opt.shape)
 
     @staticmethod
@@ -116,7 +153,8 @@ class TotalVariationBase(Function):
 
 
 def TotalVariation2dWeighted(refine=True, average_connected=True,
-                             num_workers=8, multiprocess=False, tv_args={}):
+                             num_workers=8, multiprocess=False,
+                             batch_backward=False, tv_args={}):
     r"""A two dimensional total variation function.
 
     Specifically, given as input the unaries `x`, positive row weights
@@ -142,6 +180,16 @@ def TotalVariation2dWeighted(refine=True, average_connected=True,
             Typically, you want this set to true.
         tv_args: dict
             The dictionary of arguments passed to the total variation solver.
+        multiprocess: bool
+            Whether to enable multiprocessing to parallelize computation over the
+            batch dimension
+        num_workers: int
+            The number of workers to use when multiprocessing is enabled
+        batch_backward: bool
+            Whether to use a batch-enabled, torch based, implementation of the backward
+            pass, or the standard single-sample implementation with multiprocessing
+            parallelization for the backward pass. This implementation can only be used
+            when average_connected=False
         """
 
     class TotalVariation2dWeighted_(TotalVariationBase):
@@ -158,9 +206,9 @@ def TotalVariation2dWeighted(refine=True, average_connected=True,
 
         @staticmethod
         @batch_process(num_workers=num_workers, multiprocess=multiprocess)
-        def _grad_x(opt, grad_output, average_connected):
-            return TotalVariationBase._grad_x(opt, grad_output,
-                                              average_connected)
+        def _grad_x_sample(opt, grad_output, average_connected):
+            return TotalVariationBase._grad_x_sample(opt, grad_output,
+                                                     average_connected)
 
         @staticmethod
         def forward(ctx, x, weights_row, weights_col):
@@ -199,7 +247,9 @@ def TotalVariation2dWeighted(refine=True, average_connected=True,
             opt, = ctx.saved_tensors
             grad_weights_row, grad_weights_col = None, None
             grad_x = TotalVariation2dWeighted_._grad_x(
-                opt, grad_output, average_connected=average_connected)
+                opt, grad_output,
+                average_connected=average_connected,
+                batch_enabled=batch_backward)
 
             if ctx.needs_input_grad[1]:
                 grad_weights_row = TotalVariation2dWeighted_._grad_w_row(
@@ -215,7 +265,8 @@ def TotalVariation2dWeighted(refine=True, average_connected=True,
 
 
 def TotalVariation2d(refine=True, average_connected=True,
-                     num_workers=8, multiprocess=False, tv_args={}):
+                     num_workers=8, multiprocess=False,
+                     batch_backward=False, tv_args={}):
     r"""A two dimensional total variation function with tied edge weights.
 
     Specifically, given as input the unaries `x` and edge weight ``w``, the
@@ -240,6 +291,16 @@ def TotalVariation2d(refine=True, average_connected=True,
             Typically, you want this set to true.
         tv_args: dict
             The dictionary of arguments passed to the total variation solver.
+        multiprocess: bool
+            Whether to enable multiprocessing to parallelize computation over the
+            batch dimension
+        num_workers: int
+            The number of workers to use when multiprocessing is enabled
+        batch_backward: bool
+            Whether to use a batch-enabled, torch based, implementation of the backward
+            pass, or the standard single-sample implementation with multiprocessing
+            parallelization for the backward pass. This implementation can only be used
+            when average_connected=False
         """
 
     class TotalVariation2d_(TotalVariationBase):
@@ -256,9 +317,9 @@ def TotalVariation2d(refine=True, average_connected=True,
 
         @staticmethod
         @batch_process(num_workers=num_workers, multiprocess=multiprocess)
-        def _grad_x(opt, grad_output, average_connected):
-            return TotalVariationBase._grad_x(opt, grad_output,
-                                              average_connected)
+        def _grad_x_sample(opt, grad_output, average_connected):
+            return TotalVariationBase._grad_x_sample(opt, grad_output,
+                                                     average_connected)
 
         @staticmethod
         def forward(ctx, x, w):
@@ -297,11 +358,12 @@ def TotalVariation2d(refine=True, average_connected=True,
         def backward(ctx, grad_output):
             opt, = ctx.saved_tensors
             grad_x = TotalVariation2d_._grad_x(
-                opt, grad_output, average_connected=average_connected)
+                opt, grad_output,
+                average_connected=average_connected,
+                batch_enabled=batch_backward)
             grad_w = None
 
             if ctx.needs_input_grad[1]:
-
                 grad_w_row = TotalVariation2d_._grad_w_row(opt, grad_x)
                 grad_w_row = grad_w_row.view(*grad_w_row.shape[:-2], -1)
                 grad_w_col = TotalVariation2d_._grad_w_col(opt, grad_x)
@@ -318,7 +380,7 @@ def TotalVariation2d(refine=True, average_connected=True,
 
 
 def TotalVariation1d(average_connected=True, num_workers=8,
-                     multiprocess=False, tv_args={}):
+                     multiprocess=False, batch_backward=False, tv_args={}):
     r"""A one dimensional total variation function.
 
     Specifically, given as input the signal `x` and weights :math:`\mathbf{w}`,
@@ -340,6 +402,16 @@ def TotalVariation1d(average_connected=True, num_workers=8,
             Typically, you want this set to true.
         tv_args: dict
             The dictionary of arguments passed to the total variation solver.
+        multiprocess: bool
+            Whether to enable multiprocessing to parallelize computation over the
+            batch dimension
+        num_workers: int
+            The number of workers to use when multiprocessing is enabled
+        batch_backward: bool
+            Whether to use a batch-enabled, torch based, implementation of the backward
+            pass, or the standard single-sample implementation with multiprocessing
+            parallelization for the backward pass. This implementation can only be used
+            when average_connected=False
         """
 
     class TotalVariation1d_(TotalVariationBase):
@@ -357,10 +429,9 @@ def TotalVariation1d(average_connected=True, num_workers=8,
 
         @staticmethod
         @batch_process(num_workers=num_workers, multiprocess=multiprocess)
-        def _grad_x(opt, grad_output, average_connected):
-            return TotalVariationBase._grad_x(opt, grad_output,
-                                              average_connected)
-
+        def _grad_x_sample(opt, grad_output, average_connected):
+            return TotalVariationBase._grad_x_sample(opt, grad_output,
+                                                     average_connected)
 
         @staticmethod
         def forward(ctx, x, weights):
@@ -398,7 +469,7 @@ def TotalVariation1d(average_connected=True, num_workers=8,
             grad_x = TotalVariation1d_._grad_x(
                 opt, grad_output,
                 average_connected=average_connected,
-                ndim=1).view(opt.shape)
+                ndim=1, batch_enabled=batch_backward).view(opt.shape)
 
             if ctx.needs_input_grad[1]:
                 grad_weights = TotalVariation1d_._grad_w_row(opt, grad_x)
