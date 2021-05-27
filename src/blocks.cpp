@@ -100,7 +100,7 @@ numpy.ndarray
 }  // namespace
 
 
-py::array_t<int> blocks_2d(const py::array_t<float>& matrix_) {
+py::array_t<int> blocks_2d(const py::array_t<double>& matrix_) {
     if (matrix_.ndim() != 2) {
         throw std::runtime_error("the given matrix must be two dimensional");
     }
