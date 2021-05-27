@@ -17,8 +17,16 @@ from .blocks_torch import blockwise_means_batch
 __all__ = ("TotalVariation2d", "TotalVariation2dWeighted", "TotalVariation1d")
 
 
-def batch_process(num_workers=8, multiprocess=False):
-    pool = multiprocessing.Pool(num_workers) if multiprocess else None
+def batch_process(num_workers=8, multiprocess=False, multithread=False):
+    assert (multiprocess and multithread) is False, \
+        "Either multiprocess or multithread can be True, not both"
+
+    if multiprocess:
+        pool = multiprocessing.ProcessPool(num_workers)
+    elif multithread:
+        pool = multiprocessing.ThreadPool(num_workers)
+    else:
+        pool = None
 
     def decorator(single_sample_fn):
         def wrapper(*tensors, ndim=2, **kwargs):
@@ -152,8 +160,8 @@ class TotalVariationBase(Function):
         return f
 
 
-def TotalVariation2dWeighted(refine=True, average_connected=True,
-                             num_workers=8, multiprocess=False,
+def TotalVariation2dWeighted(refine=True, average_connected=True, num_workers=8,
+                             multiprocess=False, multithread=False,
                              batch_backward=False, tv_args={}):
     r"""A two dimensional total variation function.
 
@@ -183,8 +191,11 @@ def TotalVariation2dWeighted(refine=True, average_connected=True,
         multiprocess: bool
             Whether to enable multiprocessing to parallelize computation over the
             batch dimension
+        multithread: bool
+            Whether to enable multithreading to parallelize computation over the
+            batch dimension
         num_workers: int
-            The number of workers to use when multiprocessing is enabled
+            The number of workers to use when multiprocessing/multithreading is enabled
         batch_backward: bool
             Whether to use a batch-enabled, torch based, implementation of the backward
             pass, or the standard single-sample implementation with multiprocessing
@@ -195,7 +206,8 @@ def TotalVariation2dWeighted(refine=True, average_connected=True,
     class TotalVariation2dWeighted_(TotalVariationBase):
 
         @staticmethod
-        @batch_process(num_workers=num_workers, multiprocess=multiprocess)
+        @batch_process(
+            num_workers=num_workers, multiprocess=multiprocess, multithread=multithread)
         def solve_and_refine(x, w_col, w_row, refine=True, **tv_args):
 
             opt = tv1w_2d(x, w_col, w_row, **tv_args)
@@ -205,7 +217,8 @@ def TotalVariation2dWeighted(refine=True, average_connected=True,
             return opt
 
         @staticmethod
-        @batch_process(num_workers=num_workers, multiprocess=multiprocess)
+        @batch_process(
+            num_workers=num_workers, multiprocess=multiprocess, multithread=multithread)
         def _grad_x_sample(opt, grad_output, average_connected):
             return TotalVariationBase._grad_x_sample(opt, grad_output,
                                                      average_connected)
@@ -264,8 +277,8 @@ def TotalVariation2dWeighted(refine=True, average_connected=True,
     return TotalVariation2dWeighted_.apply
 
 
-def TotalVariation2d(refine=True, average_connected=True,
-                     num_workers=8, multiprocess=False,
+def TotalVariation2d(refine=True, average_connected=True, num_workers=8,
+                     multiprocess=False, multithread=False,
                      batch_backward=False, tv_args={}):
     r"""A two dimensional total variation function with tied edge weights.
 
@@ -294,8 +307,11 @@ def TotalVariation2d(refine=True, average_connected=True,
         multiprocess: bool
             Whether to enable multiprocessing to parallelize computation over the
             batch dimension
+        multithread: bool
+            Whether to enable multithreading to parallelize computation over the
+            batch dimension
         num_workers: int
-            The number of workers to use when multiprocessing is enabled
+            The number of workers to use when multiprocessing/multithreading is enabled
         batch_backward: bool
             Whether to use a batch-enabled, torch based, implementation of the backward
             pass, or the standard single-sample implementation with multiprocessing
@@ -306,7 +322,8 @@ def TotalVariation2d(refine=True, average_connected=True,
     class TotalVariation2d_(TotalVariationBase):
 
         @staticmethod
-        @batch_process(num_workers=num_workers, multiprocess=multiprocess)
+        @batch_process(
+            num_workers=num_workers, multiprocess=multiprocess, multithread=multithread)
         def solve_and_refine(x, w, refine=True, **tv_args):
 
             opt = tv1_2d(x, w[0], **tv_args)
@@ -316,7 +333,8 @@ def TotalVariation2d(refine=True, average_connected=True,
             return opt
 
         @staticmethod
-        @batch_process(num_workers=num_workers, multiprocess=multiprocess)
+        @batch_process(
+            num_workers=num_workers, multiprocess=multiprocess, multithread=multithread)
         def _grad_x_sample(opt, grad_output, average_connected):
             return TotalVariationBase._grad_x_sample(opt, grad_output,
                                                      average_connected)
@@ -380,7 +398,8 @@ def TotalVariation2d(refine=True, average_connected=True,
 
 
 def TotalVariation1d(average_connected=True, num_workers=8,
-                     multiprocess=False, batch_backward=False, tv_args={}):
+                     multiprocess=False, multithread=False,
+                     batch_backward=False, tv_args={}):
     r"""A one dimensional total variation function.
 
     Specifically, given as input the signal `x` and weights :math:`\mathbf{w}`,
@@ -405,8 +424,11 @@ def TotalVariation1d(average_connected=True, num_workers=8,
         multiprocess: bool
             Whether to enable multiprocessing to parallelize computation over the
             batch dimension
+        multithread: bool
+            Whether to enable multithreading to parallelize computation over the
+            batch dimension
         num_workers: int
-            The number of workers to use when multiprocessing is enabled
+            The number of workers to use when multiprocessing/multithreading is enabled
         batch_backward: bool
             Whether to use a batch-enabled, torch based, implementation of the backward
             pass, or the standard single-sample implementation with multiprocessing
@@ -417,7 +439,8 @@ def TotalVariation1d(average_connected=True, num_workers=8,
     class TotalVariation1d_(TotalVariationBase):
 
         @staticmethod
-        @batch_process(num_workers=num_workers, multiprocess=multiprocess)
+        @batch_process(
+            num_workers=num_workers, multiprocess=multiprocess, multithread=multithread)
         def solve_and_refine(x, w, equal_weights=True, **tv_args):
 
             if equal_weights:
@@ -428,7 +451,8 @@ def TotalVariation1d(average_connected=True, num_workers=8,
             return opt
 
         @staticmethod
-        @batch_process(num_workers=num_workers, multiprocess=multiprocess)
+        @batch_process(
+            num_workers=num_workers, multiprocess=multiprocess, multithread=multithread)
         def _grad_x_sample(opt, grad_output, average_connected):
             return TotalVariationBase._grad_x_sample(opt, grad_output,
                                                      average_connected)

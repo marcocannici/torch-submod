@@ -44,6 +44,6 @@ def test_2dw(n, m, w):
     x = Variable(torch.randn(n, m), requires_grad=True)
     w_r = Variable(0.1 + w * torch.rand(n, m-1), requires_grad=True)
     w_c = Variable(0.1 + w * torch.rand(n-1, m), requires_grad=True)
-    tv_args = {'max_iters': 1000, 'n_threads': 6}
+    tv_args = {'max_iters': 100, 'n_threads': 6}
     assert gradcheck(TotalVariation2dWeighted(tv_args=tv_args), (x, w_r, w_c),
                      eps=1e-5, atol=5e-2, rtol=1e-3)

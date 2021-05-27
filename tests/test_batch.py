@@ -16,8 +16,8 @@ def test_1d(b, n, w):
     tv_args = {'method': 'condattautstring'}
 
     for batch in [True, False]:
-        tv = TotalVariation1d(average_connected=False, num_workers=b,
-                              batch_backward=batch, tv_args=tv_args)
+        tv = TotalVariation1d(average_connected=False, num_workers=min(8, b),
+                              multithread=True, batch_backward=batch, tv_args=tv_args)
         with torch.no_grad():
             batch_tv = tv(x, w)
             sample_tv = torch.stack([tv(x[i], w[i]) for i in range(b)])
@@ -34,8 +34,8 @@ def test_1dw(b, n, w):
     tv_args = {'method': 'tautstring'}
 
     for batch in [True, False]:
-        tv = TotalVariation1d(average_connected=False, num_workers=b,
-                              batch_backward=batch, tv_args=tv_args)
+        tv = TotalVariation1d(average_connected=False, num_workers=min(8, b),
+                              multithread=True, batch_backward=batch, tv_args=tv_args)
         with torch.no_grad():
             batch_tv = tv(x, w)
             sample_tv = torch.stack([tv(x[i], w[i]) for i in range(b)])
@@ -52,8 +52,8 @@ def test_2d(b, n, m, w):
     tv_args = {'method': 'dr', 'max_iters': 100, 'n_threads': 2}
 
     for batch in [True, False]:
-        tv = TotalVariation2d(refine=True, average_connected=False, num_workers=b,
-                              batch_backward=batch, tv_args=tv_args)
+        tv = TotalVariation2d(refine=True, average_connected=False, num_workers=min(8, b),
+                              multithread=True, batch_backward=batch, tv_args=tv_args)
         with torch.no_grad():
             batch_tv = tv(x, w)
             sample_tv = torch.stack([tv(x[i], w[i]) for i in range(b)])
@@ -71,7 +71,8 @@ def test_2dw(b, n, m, w):
     tv_args = {'max_iters': 100, 'n_threads': 2}
 
     for batch in [True, False]:
-        tv = TotalVariation2dWeighted(refine=True, average_connected=False, num_workers=b,
+        tv = TotalVariation2dWeighted(refine=True, average_connected=False,
+                                      num_workers=min(8, b), multithread=True,
                                       batch_backward=batch, tv_args=tv_args)
         with torch.no_grad():
             batch_tv = tv(x, w_r, w_c)
